@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared Expense Settlement</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --surface: #ffffff; --text: #1d1d1f; --muted: #6b6b70;
+    --border: #e3e1dc; --accent: #2f6f5e; --accent-soft: #e4efeb; --tag: #8a5a12; --tag-soft: #f6ecd9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141414; --surface: #1e1e1f; --text: #ececec; --muted: #9a9aa0;
+      --border: #333335; --accent: #7cc4ad; --accent-soft: #1f3530; --tag: #e2b56a; --tag-soft: #3a2f1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1200px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 40px 0 12px; }
+  .muted { color: var(--muted); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+  .hero { padding: 24px; margin-top: 20px; }
+  .hero .who { font-size: 15px; color: var(--muted); }
+  .hero .amt { font-size: 40px; font-weight: 650; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .hero .stats { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 8px; color: var(--muted); }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+  th { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tr.total td { font-weight: 650; border-top: 2px solid var(--border); }
+  .chip { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 12px; }
+  .chip.Tag, .tag { background: var(--tag-soft); color: var(--tag); }
+  .chip.Category { background: var(--accent-soft); color: var(--accent); }
+  .tag { padding: 0 4px; border-radius: 3px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+  .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .tabs button, .btn { background: var(--surface); color: var(--text); border: 0; padding: 7px 14px;
+                       font: inherit; cursor: pointer; }
+  .tabs button + button { border-left: 1px solid var(--border); }
+  .tabs button[aria-pressed="true"] { background: var(--accent); color: var(--bg); }
+  .btn { border: 1px solid var(--border); border-radius: 8px; }
+  input[type=search] { flex: 1; min-width: 200px; padding: 7px 10px; border: 1px solid var(--border);
+                       border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+  .partner h3 { font-size: 15px; margin: 24px 0 8px; }
+  details { margin-bottom: 10px; }
+  summary { padding: 12px 16px; cursor: pointer; display: flex; gap: 10px; align-items: center; }
+  summary .grow { flex: 1; font-weight: 600; }
+  details[open] summary { border-bottom: 1px solid var(--border); }
+  .also { font-size: 12px; color: var(--muted); }
+  .empty { padding: 24px; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Shared Expense Settlement</h1>
+  <div class="muted" id="range"></div>
+  <section class="card hero" id="hero"></section>
+
+  <h2>Settlement by group</h2>
+  <div class="card scroll"><table id="settlement"></table></div>
+  <p class="muted" id="note"></p>
+
+  <h2>Shared transactions</h2>
+  <div class="controls">
+    <div class="tabs" id="tabs"></div>
+    <input type="search" id="search" placeholder="Search merchant, notes, amount…">
+    <button class="btn" id="sort"></button>
+  </div>
+  <div id="txns"></div>
+</main>
+
+<script id="data" type="application/json">/*DATA*/</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const [A, B] = D.names;
+const fmt = n => (Number(n) < 0 ? '-$' : '$') + Math.abs(Number(n)).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const fmtDate = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-US', {month: 'short', day: 'numeric', year: 'numeric'});
+
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const k of kids) if (k != null) e.append(k instanceof Node ? k : String(k));
+  return e;
+}
+const owesText = s => s.debtor ? `${s.debtor} owes ${s.creditor} ${fmt(s.amount)}` : 'Even';
+
+// Header + hero
+document.getElementById('range').textContent =
+  (D.start || D.end ? `${D.start ? fmtDate(D.start) : 'Beginning'} – ${D.end ? fmtDate(D.end) : 'Today'}` : 'All dates')
+  + ` · generated ${fmtDate(D.generated)}`;
+const T = D.total, count = D.transactions[0].length + D.transactions[1].length;
+document.getElementById('hero').append(
+  el('div', {class: 'who'}, T.debtor ? `${T.debtor} owes ${T.creditor}` : 'All square'),
+  el('div', {class: 'amt'}, fmt(T.amount)),
+  el('div', {class: 'stats'},
+    el('span', {}, `${A} paid ${fmt(T.a)}`), el('span', {}, `${B} paid ${fmt(T.b)}`),
+    el('span', {}, `Total shared ${fmt(Number(T.a) + Number(T.b))}`), el('span', {}, `${count} transactions`)));
+
+// Settlement table
+const st = document.getElementById('settlement');
+st.append(el('thead', {}, el('tr', {},
+  el('th', {}, 'Group'), el('th', {}, 'Type'), el('th', {class: 'num'}, `${A} paid`),
+  el('th', {class: 'num'}, `${B} paid`), el('th', {class: 'num'}, 'Total'), el('th', {}, 'Settlement'))));
+const sb = el('tbody');
+for (const s of D.settlement.concat([T])) {
+  const isTotal = s === T;
+  sb.append(el('tr', {class: isTotal ? 'total' : ''},
+    el('td', {}, s.group), el('td', {}, s.type ? el('span', {class: 'chip ' + s.type}, s.type) : ''),
+    el('td', {class: 'num'}, fmt(s.a)), el('td', {class: 'num'}, fmt(s.b)),
+    el('td', {class: 'num'}, fmt(Number(s.a) + Number(s.b))), el('td', {}, owesText(s))));
+}
+if (!D.settlement.length) sb.append(el('tr', {}, el('td', {colspan: 6, class: 'empty'}, 'No #shared transactions in this range.')));
+st.append(sb);
+const multi = D.transactions.flat().filter(t => t.groups.length > 1).length;
+if (multi) document.getElementById('note').textContent =
+  `${multi} transaction(s) carry more than one group tag and appear in each of those groups; the total counts each transaction once, so group rows can add up to more than the total.`;
+
+// Transactions view
+const state = {who: 'both', q: '', newestFirst: true};
+const order = D.settlement.map(s => s.group);
+const tabs = document.getElementById('tabs');
+for (const [key, label] of [['0', A], ['1', B], ['both', 'Both']]) {
+  tabs.append(el('button', {'data-k': key, onclick: () => { state.who = key; render(); }}, label));
+}
+document.getElementById('search').addEventListener('input', e => { state.q = e.target.value.toLowerCase(); render(); });
+document.getElementById('sort').addEventListener('click', () => { state.newestFirst = !state.newestFirst; render(); });
+
+function notesCell(text) {
+  const td = el('td');
+  for (const part of text.split(/(#[\w-]+)/)) td.append(part.startsWith('#') ? el('span', {class: 'tag'}, part) : part);
+  return td;
+}
+
+function groupTable(txns, group) {
+  const head = el('tr', {}, ...D.columns.map(c => el('th', {class: c === 'Amount' ? 'num' : ''}, c)));
+  const body = el('tbody');
+  for (const t of txns) {
+    const tr = el('tr');
+    for (const c of D.columns) {
+      if (c === 'Notes') {
+        const td = notesCell(t.values[c]);
+        const others = t.groups.filter(g => g !== group);
+        if (others.length) td.append(el('div', {class: 'also'}, 'Also in ' + others.join(', ')));
+        tr.append(td);
+      } else {
+        tr.append(el('td', {class: c === 'Amount' ? 'num' : ''}, c === 'Amount' ? fmt(t.values[c]) : t.values[c]));
+      }
+    }
+    body.append(tr);
+  }
+  return el('div', {class: 'scroll'}, el('table', {}, el('thead', {}, head), body));
+}
+
+function partnerSection(i) {
+  const txns = D.transactions[i]
+    .filter(t => !state.q || Object.values(t.values).join(' ').toLowerCase().includes(state.q))
+    .sort((x, y) => state.newestFirst ? y.date.localeCompare(x.date) : x.date.localeCompare(y.date));
+  const total = D.transactions[i].reduce((s, t) => s + Number(t.spent), 0);
+  const sec = el('section', {class: 'partner'},
+    el('h3', {}, `${D.names[i]} `, el('span', {class: 'muted'}, `· paid ${fmt(total)} across ${D.transactions[i].length} transactions`)));
+  let shown = 0;
+  for (const g of order) {
+    const gt = txns.filter(t => t.groups.includes(g));
+    if (!gt.length) continue;
+    shown++;
+    const all = D.transactions[i].filter(t => t.groups.includes(g)).length;
+    const type = g.startsWith('#') ? 'Tag' : 'Category';
+    sec.append(el('details', {class: 'card', open: ''},
+      el('summary', {},
+        el('span', {class: 'grow'}, g), el('span', {class: 'chip ' + type}, type),
+        el('span', {class: 'muted'}, gt.length === all ? `${all} txns` : `${gt.length} of ${all} txns`),
+        el('span', {class: 'num'}, fmt(gt.reduce((s, t) => s + Number(t.spent), 0)))),
+      groupTable(gt, g)));
+  }
+  if (!shown) sec.append(el('div', {class: 'card empty'}, state.q ? 'No matching transactions.' : 'No #shared transactions.'));
+  return sec;
+}
+
+function render() {
+  for (const b of tabs.children) b.setAttribute('aria-pressed', b.dataset.k === state.who);
+  document.getElementById('sort').textContent = state.newestFirst ? 'Newest first ↓' : 'Oldest first ↑';
+  const box = document.getElementById('txns');
+  box.replaceChildren(...(state.who === 'both' ? [0, 1] : [Number(state.who)]).map(partnerSection));
+}
+render();
+</script>
+</body>
+</html>

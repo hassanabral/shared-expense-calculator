@@ -1,0 +1,8 @@
+# Real financial data - never commit
+PocketGuard-transactions-*.csv
+output/
+
+# Local tooling
+.idea/
+__pycache__/
+.DS_Store
