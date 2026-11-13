@@ -2,6 +2,9 @@
 PocketGuard-transactions-*.csv
 output/
 
+# Personal settings (Venmo usernames) - copy config.example.json
+config.json
+
 # Local tooling
 .idea/
 __pycache__/

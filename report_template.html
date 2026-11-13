@@ -28,11 +28,24 @@
   .hero .who { font-size: 15px; color: var(--muted); }
   .hero .amt { font-size: 40px; font-weight: 650; color: var(--accent); font-variant-numeric: tabular-nums; }
   .hero .stats { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 8px; color: var(--muted); }
+  .venmo { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .actions { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 8px; }
+  .vbtn { display: inline-block; padding: 8px 16px; border-radius: 8px; text-decoration: none; font-weight: 600;
+          white-space: nowrap; border: 1px solid var(--accent); color: var(--accent); }
+  .vbtn.charge { background: var(--accent); color: var(--bg); }
+  td .vbtn { padding: 2px 10px; font-size: 13px; }
+  .items { font-size: 12px; color: var(--muted); margin: 4px 0; }
+  .settled { color: var(--accent); font-weight: 600; white-space: nowrap; }
   .scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
   th, td { padding: 8px 12px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
   th { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
   tbody tr:last-child td { border-bottom: 0; }
+  .settle { table-layout: fixed; min-width: 880px; }
+  .settle th:nth-child(1) { width: 16%; } .settle th:nth-child(2) { width: 8%; }
+  .settle th:nth-child(3), .settle th:nth-child(4) { width: 11%; } .settle th:nth-child(5) { width: 9%; }
+  .settle th:nth-child(6) { width: 24%; } .settle th:nth-child(7) { width: 21%; }
+  .settle .settled { white-space: normal; }
   tr.total td { font-weight: 650; border-top: 2px solid var(--border); }
   .chip { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 12px; }
   .chip.Tag, .tag { background: var(--tag-soft); color: var(--tag); }
@@ -62,11 +75,21 @@
   <div class="muted" id="range"></div>
   <section class="card hero" id="hero"></section>
 
-  <h2>Settlement by group</h2>
-  <div class="card scroll"><table id="settlement"></table></div>
-  <p class="muted" id="note"></p>
+  <h2>Category settlement</h2>
+  <div class="card scroll"><table id="settlement" class="settle"></table></div>
 
-  <h2>Shared transactions</h2>
+  <section id="tag-section" hidden>
+    <h2>Tag settlement</h2>
+    <p class="muted">Each tag is settled separately and is not included in the category total.</p>
+    <div class="card scroll"><table id="tag-settlement" class="settle"></table></div>
+    <p class="muted" id="note"></p>
+  </section>
+
+  <section id="payments" hidden>
+    <h2>Settle-up payments</h2>
+  </section>
+
+  <h2>Shared Expenses</h2>
   <div class="controls">
     <div class="tabs" id="tabs"></div>
     <input type="search" id="search" placeholder="Search merchant, notes, amount…">
@@ -98,32 +121,77 @@ const owesText = s => s.debtor ? `${s.debtor} owes ${s.creditor} ${fmt(s.amount)
 document.getElementById('range').textContent =
   (D.start || D.end ? `${D.start ? fmtDate(D.start) : 'Beginning'} – ${D.end ? fmtDate(D.end) : 'Today'}` : 'All dates')
   + ` · generated ${fmtDate(D.generated)}`;
-const T = D.total, count = D.transactions[0].length + D.transactions[1].length;
-document.getElementById('hero').append(
-  el('div', {class: 'who'}, T.debtor ? `${T.debtor} owes ${T.creditor}` : 'All square'),
-  el('div', {class: 'amt'}, fmt(T.amount)),
-  el('div', {class: 'stats'},
-    el('span', {}, `${A} paid ${fmt(T.a)}`), el('span', {}, `${B} paid ${fmt(T.b)}`),
-    el('span', {}, `Total shared ${fmt(Number(T.a) + Number(T.b))}`), el('span', {}, `${count} transactions`)));
+const T = D.total, Bal = D.balance, me = D.me, venmo = me !== null;
+const isTag = g => g.startsWith('#');
+const catRows = D.settlement.filter(s => !isTag(s.group)), tagRows = D.settlement.filter(s => isTag(s.group));
+const count = D.transactions.flat().filter(t => !isTag(t.groups[0])).length;
+const hasPay = D.payments[0].length + D.payments[1].length > 0;
+const catItems = D.items.filter(i => i.type === 'Category');
+const tagItem = g => D.items.find(i => i.group === g);
+const arrow = i => `${D.names[i.debtor]} → ${D.names[1 - i.debtor]}`;
 
-// Settlement table
-const st = document.getElementById('settlement');
-st.append(el('thead', {}, el('tr', {},
-  el('th', {}, 'Group'), el('th', {}, 'Type'), el('th', {class: 'num'}, `${A} paid`),
-  el('th', {class: 'num'}, `${B} paid`), el('th', {class: 'num'}, 'Total'), el('th', {}, 'Settlement'))));
-const sb = el('tbody');
-for (const s of D.settlement.concat([T])) {
-  const isTotal = s === T;
-  sb.append(el('tr', {class: isTotal ? 'total' : ''},
-    el('td', {}, s.group), el('td', {}, s.type ? el('span', {class: 'chip ' + s.type}, s.type) : ''),
-    el('td', {class: 'num'}, fmt(s.a)), el('td', {class: 'num'}, fmt(s.b)),
-    el('td', {class: 'num'}, fmt(Number(s.a) + Number(s.b))), el('td', {}, owesText(s))));
+// A settlement item is either settled (by a matching #settleup payment), open with a Venmo button, or just open
+function itemAction(i, short) {
+  if (i.paid) return el('span', {class: 'settled'}, `✓ Sent ${fmtDate(i.paid.date)}`
+    + (Number(i.paid.amount) !== Number(i.amount) ? ` (${fmt(i.paid.amount)})` : ''));
+  if (!venmo) return el('span', {class: 'muted'}, 'Open');
+  const who = D.names[1 - me];
+  const label = i.txn === 'charge' ? (short ? `Request ${fmt(i.amount)}` : `Request ${fmt(i.amount)} from ${who}`)
+                                   : (short ? `Pay ${fmt(i.amount)}` : `Pay ${who} ${fmt(i.amount)}`);
+  return el('a', {class: 'vbtn ' + i.txn, href: i.url, target: '_blank', rel: 'noopener'}, label);
 }
-if (!D.settlement.length) sb.append(el('tr', {}, el('td', {colspan: 6, class: 'empty'}, 'No #shared transactions in this range.')));
-st.append(sb);
+
+function categoryPanel() {
+  if (!catItems.length) return null;
+  return el('div', {class: 'venmo'},
+    el('div', {class: 'muted'},
+      `Category settlements${venmo ? ` · viewing as ${D.names[me]}` : ''} · tags are settled separately below`),
+    el('div', {class: 'actions'}, ...catItems.map(i => el('div', {},
+      el('div', {class: 'items'}, `${arrow(i)} · ${fmt(i.amount)}`),
+      itemAction(i, false),
+      el('div', {class: 'items'}, i.parts.map(p => p[0]).join(', '))))));
+}
+
+document.getElementById('hero').append(
+  el('div', {class: 'who'}, Bal.debtor ? `${Bal.debtor} owes ${Bal.creditor}` : catItems.length ? 'Categories settled' : 'All square'),
+  el('div', {class: 'amt'}, fmt(Bal.amount)),
+  el('div', {class: 'stats'},
+    el('span', {}, `${A} spend ${fmt(T.a)}`), el('span', {}, `${B} spend ${fmt(T.b)}`),
+    el('span', {}, `Categories total ${fmt(Number(T.a) + Number(T.b))}`), el('span', {}, `${count} transactions`),
+    tagRows.length ? el('span', {}, `Excludes ${tagRows.length} tag group(s), settled separately below`) : null),
+  categoryPanel());
+
+// Settlement tables: categories and tags are separate tables with the same columns
+const tableHead = () => el('thead', {}, el('tr', {},
+  el('th', {}, 'Group'), el('th', {}, 'Type'), el('th', {class: 'num'}, `${A} spend`),
+  el('th', {class: 'num'}, `${B} spend`), el('th', {class: 'num'}, 'Total'), el('th', {}, 'Settlement'),
+  el('th', {}, 'Status')));
+const sb = el('tbody');
+function groupRow(s, item) {
+  const isTotal = s === T;
+  return el('tr', {class: isTotal ? 'total' : ''},
+    el('td', {}, isTotal ? 'Total (categories)' : s.group), el('td', {}, s.type ? el('span', {class: 'chip ' + s.type}, s.type) : ''),
+    el('td', {class: 'num'}, fmt(s.a)), el('td', {class: 'num'}, fmt(s.b)),
+    el('td', {class: 'num'}, fmt(Number(s.a) + Number(s.b))), el('td', {}, owesText(s)),
+    el('td', {}, item ? itemAction(item, true) : ''));
+}
+for (const s of catRows.concat([T])) sb.append(groupRow(s));
+for (const i of catItems) sb.append(el('tr', {},
+  el('td', {}, 'Category settlement'), el('td'), el('td'), el('td'), el('td'),
+  el('td', {}, `${arrow(i)} ${fmt(i.amount)}`), el('td', {}, itemAction(i, true))));
+if (catItems.length) sb.append(el('tr', {class: 'total'},
+  el('td', {}, 'Balance due'), el('td'), el('td'), el('td'), el('td'),
+  el('td', {}, Bal.debtor ? owesText(Bal) : 'Settled'), el('td')));
+if (!catRows.length) sb.append(el('tr', {}, el('td', {colspan: 7, class: 'empty'}, 'No category expenses in this range.')));
+document.getElementById('settlement').append(tableHead(), sb);
+if (tagRows.length) {
+  document.getElementById('tag-section').hidden = false;
+  document.getElementById('tag-settlement').append(tableHead(),
+    el('tbody', {}, ...tagRows.map(s => groupRow(s, tagItem(s.group)))));
+}
 const multi = D.transactions.flat().filter(t => t.groups.length > 1).length;
 if (multi) document.getElementById('note').textContent =
-  `${multi} transaction(s) carry more than one group tag and appear in each of those groups; the total counts each transaction once, so group rows can add up to more than the total.`;
+  `${multi} transaction(s) carry more than one tag and appear in each of those tag groups, including each tag's settlement.`;
 
 // Transactions view
 const state = {who: 'both', q: '', newestFirst: true};
@@ -151,6 +219,8 @@ function groupTable(txns, group) {
         const td = notesCell(t.values[c]);
         const others = t.groups.filter(g => g !== group);
         if (others.length) td.append(el('div', {class: 'also'}, 'Also in ' + others.join(', ')));
+        if ('settles' in t) td.append(el('div', {class: t.settles ? 'settled' : 'also'},
+          t.settles ? 'Settles ' + t.settles : 'Ignored: matches no settlement within $1'));
         tr.append(td);
       } else {
         tr.append(el('td', {class: c === 'Amount' ? 'num' : ''}, c === 'Amount' ? fmt(t.values[c]) : t.values[c]));
@@ -165,9 +235,10 @@ function partnerSection(i) {
   const txns = D.transactions[i]
     .filter(t => !state.q || Object.values(t.values).join(' ').toLowerCase().includes(state.q))
     .sort((x, y) => state.newestFirst ? y.date.localeCompare(x.date) : x.date.localeCompare(y.date));
-  const total = D.transactions[i].reduce((s, t) => s + Number(t.spent), 0);
+  const catTxns = D.transactions[i].filter(t => !isTag(t.groups[0]));  // trips (tags) are settled separately
+  const total = catTxns.reduce((s, t) => s + Number(t.spent), 0);
   const sec = el('section', {class: 'partner'},
-    el('h3', {}, `${D.names[i]} `, el('span', {class: 'muted'}, `· paid ${fmt(total)} across ${D.transactions[i].length} transactions`)));
+    el('h3', {}, `${D.names[i]} `, el('span', {class: 'muted'}, `· spend ${fmt(total)} across ${catTxns.length} transactions`)));
   let shown = 0;
   for (const g of order) {
     const gt = txns.filter(t => t.groups.includes(g));
@@ -184,6 +255,18 @@ function partnerSection(i) {
   }
   if (!shown) sec.append(el('div', {class: 'card empty'}, state.q ? 'No matching transactions.' : 'No #shared transactions.'));
   return sec;
+}
+
+if (hasPay) {
+  const sec = document.getElementById('payments');
+  sec.hidden = false;
+  for (const i of [0, 1]) {
+    if (!D.payments[i].length) continue;
+    sec.append(el('section', {class: 'partner'},
+      el('h3', {}, `${D.names[i]} → ${D.names[1 - i]} `,
+        el('span', {class: 'muted'}, `· ${D.payments[i].length} #settleup transfer(s)`)),
+      el('div', {class: 'card'}, groupTable(D.payments[i], null))));
+  }
 }
 
 function render() {
